@@ -4,6 +4,8 @@ import socket from "./socket";
 function Whiteboard() {
   const canvasRef = useRef(null);
   const ctxRef = useRef(null);
+  const peerRef = useRef(null);
+  const localStreamRef = useRef(null);
 
   const [drawing, setDrawing] = useState(false);
   const [color, setColor] = useState("#000000");
@@ -12,7 +14,9 @@ function Whiteboard() {
 
   const lastPos = useRef({ x: 0, y: 0 });
 
-  // Initialize canvas
+  // =========================
+  // INITIALIZE
+  // =========================
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -23,7 +27,6 @@ function Whiteboard() {
 
     resizeCanvas();
 
-    // Receive drawing from others
     socket.on("draw", (data) => {
       drawLine(
         data.x0,
@@ -36,54 +39,68 @@ function Whiteboard() {
       );
     });
 
-    // Receive clear
     socket.on("clear_canvas", () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     });
+
+    socket.on("offer", handleOffer);
+    socket.on("answer", handleAnswer);
+    socket.on("ice_candidate", handleICE);
 
     window.addEventListener("resize", resizeCanvas);
 
     return () => {
       socket.off("draw");
       socket.off("clear_canvas");
+      socket.off("offer");
+      socket.off("answer");
+      socket.off("ice_candidate");
       window.removeEventListener("resize", resizeCanvas);
     };
   }, []);
 
-  // 🔥 Proper resize (Fixes cursor mismatch)
+  // =========================
+  // PERFECT CANVAS SCALING
+  // =========================
   const resizeCanvas = () => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
 
-    canvas.width = rect.width;
-    canvas.height = rect.height;
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
   };
 
-  // 🔥 Accurate mouse/touch position
+  // =========================
+  // GET CORRECT POINTER POSITION
+  // =========================
   const getPosition = (event) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
 
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    let clientX, clientY;
 
     if (event.touches) {
-      return {
-        x: (event.touches[0].clientX - rect.left) * scaleX,
-        y: (event.touches[0].clientY - rect.top) * scaleY,
-      };
+      clientX = event.touches[0].clientX;
+      clientY = event.touches[0].clientY;
     } else {
-      return {
-        x: (event.clientX - rect.left) * scaleX,
-        y: (event.clientY - rect.top) * scaleY,
-      };
+      clientX = event.clientX;
+      clientY = event.clientY;
     }
+
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    };
   };
 
   const startDrawing = (e) => {
-    const pos = getPosition(e);
     setDrawing(true);
-    lastPos.current = pos;
+    lastPos.current = getPosition(e);
   };
 
   const draw = (e) => {
@@ -104,9 +121,7 @@ function Whiteboard() {
     lastPos.current = pos;
   };
 
-  const stopDrawing = () => {
-    setDrawing(false);
-  };
+  const stopDrawing = () => setDrawing(false);
 
   const drawLine = (x0, y0, x1, y1, strokeColor, width, emit) => {
     const ctx = ctxRef.current;
@@ -122,14 +137,7 @@ function Whiteboard() {
 
     if (!emit) return;
 
-    socket.emit("draw", {
-      x0,
-      y0,
-      x1,
-      y1,
-      color: strokeColor,
-      width,
-    });
+    socket.emit("draw", { x0, y0, x1, y1, color: strokeColor, width });
   };
 
   const clearCanvas = () => {
@@ -138,35 +146,83 @@ function Whiteboard() {
     socket.emit("clear_canvas");
   };
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        padding: "10px",
-        width: "100%",
-      }}
-    >
-      <h2>Real-Time Whiteboard</h2>
+  // =========================
+  // VOICE CHAT (WEBRTC)
+  // =========================
+  const startVoice = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    localStreamRef.current = stream;
 
-      {/* Controls */}
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          justifyContent: "center",
-          gap: "10px",
-          marginBottom: "10px",
-        }}
-      >
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    peerRef.current = peer;
+
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+
+    peer.ontrack = (event) => {
+      const audio = new Audio();
+      audio.srcObject = event.streams[0];
+      audio.play();
+    };
+
+    peer.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit("ice_candidate", event.candidate);
+      }
+    };
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    socket.emit("offer", offer);
+  };
+
+  const handleOffer = async (offer) => {
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    peerRef.current = peer;
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+
+    peer.ontrack = (event) => {
+      const audio = new Audio();
+      audio.srcObject = event.streams[0];
+      audio.play();
+    };
+
+    await peer.setRemoteDescription(offer);
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    socket.emit("answer", answer);
+  };
+
+  const handleAnswer = async (answer) => {
+    await peerRef.current.setRemoteDescription(answer);
+  };
+
+  const handleICE = async (candidate) => {
+    try {
+      await peerRef.current.addIceCandidate(candidate);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  return (
+    <div style={{ textAlign: "center" }}>
+      <h2>Whiteboard + Voice (Mobile Ready)</h2>
+
+      <div style={{ marginBottom: "10px" }}>
         <input
           type="color"
           value={color}
-          onChange={(e) => setColor(e.target.value)}
           disabled={eraser}
+          onChange={(e) => setColor(e.target.value)}
         />
-
         <input
           type="range"
           min="1"
@@ -174,23 +230,20 @@ function Whiteboard() {
           value={brushSize}
           onChange={(e) => setBrushSize(Number(e.target.value))}
         />
-
         <button onClick={() => setEraser(!eraser)}>
           {eraser ? "Disable Eraser" : "Eraser"}
         </button>
-
         <button onClick={clearCanvas}>Clear</button>
+        <button onClick={startVoice}>Start Voice</button>
       </div>
 
-      {/* Canvas */}
       <canvas
         ref={canvasRef}
         style={{
           border: "1px solid black",
-          touchAction: "none",
           width: "95%",
-          maxWidth: "1200px",
           height: "65vh",
+          touchAction: "none",
         }}
         onMouseDown={startDrawing}
         onMouseMove={draw}

@@ -1,6 +1,7 @@
 import { io } from "socket.io-client";
 
-// Connect to backend server
-const socket = io("https://websocket-cafo.onrender.com");
+const socket = io("https://websocket-cafo.onrender.com", {
+  transports: ["websocket"],
+});
 
 export default socket;

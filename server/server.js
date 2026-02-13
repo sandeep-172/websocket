@@ -10,40 +10,42 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*", // allow all origins for frontend (Vercel)
+    origin: "*",
   },
 });
 
-// Optional: store current whiteboard state to send to new users
 let whiteboardHistory = [];
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
-  // Send existing whiteboard data to newly connected user
+  // Send existing board to new user
   whiteboardHistory.forEach((action) => {
     socket.emit("draw", action);
   });
 
-  // ---- Chat messages ----
-  socket.on("send_message", (message) => {
-    io.emit("receive_message", message);
-  });
-
-  // ---- Drawing events ----
+  // ---- Drawing ----
   socket.on("draw", (data) => {
-    // Save the action
     whiteboardHistory.push(data);
-    // Broadcast to all other users
-    socket.broadcast.emit("draw", data);
+    io.emit("draw", data); // send to everyone
   });
 
-  // ---- Clear canvas ----
   socket.on("clear_canvas", () => {
-    // Clear history
     whiteboardHistory = [];
-    // Broadcast to all clients including sender
     io.emit("clear_canvas");
+  });
+
+  // ---- WebRTC Signaling ----
+  socket.on("offer", (offer) => {
+    socket.broadcast.emit("offer", offer);
+  });
+
+  socket.on("answer", (answer) => {
+    socket.broadcast.emit("answer", answer);
+  });
+
+  socket.on("ice_candidate", (candidate) => {
+    socket.broadcast.emit("ice_candidate", candidate);
   });
 
   socket.on("disconnect", () => {
