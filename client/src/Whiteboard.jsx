@@ -15,16 +15,25 @@ function Whiteboard() {
   // Initialize canvas
   useEffect(() => {
     const canvas = canvasRef.current;
-    resizeCanvas();
-
     const ctx = canvas.getContext("2d");
+
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctxRef.current = ctx;
 
+    resizeCanvas();
+
     // Receive drawing from others
     socket.on("draw", (data) => {
-      drawLine(data.x0, data.y0, data.x1, data.y1, data.color, data.width, false);
+      drawLine(
+        data.x0,
+        data.y0,
+        data.x1,
+        data.y1,
+        data.color,
+        data.width,
+        false
+      );
     });
 
     // Receive clear
@@ -41,27 +50,32 @@ function Whiteboard() {
     };
   }, []);
 
-  // Resize canvas dynamically
+  // 🔥 Proper resize (Fixes cursor mismatch)
   const resizeCanvas = () => {
     const canvas = canvasRef.current;
-    canvas.width = window.innerWidth * 0.95;
-    canvas.height = window.innerHeight * 0.65;
+    const rect = canvas.getBoundingClientRect();
+
+    canvas.width = rect.width;
+    canvas.height = rect.height;
   };
 
-  // Get correct mouse/touch position
+  // 🔥 Accurate mouse/touch position
   const getPosition = (event) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
 
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+
     if (event.touches) {
       return {
-        x: event.touches[0].clientX - rect.left,
-        y: event.touches[0].clientY - rect.top,
+        x: (event.touches[0].clientX - rect.left) * scaleX,
+        y: (event.touches[0].clientY - rect.top) * scaleY,
       };
     } else {
       return {
-        x: event.clientX - rect.left,
-        y: event.clientY - rect.top,
+        x: (event.clientX - rect.left) * scaleX,
+        y: (event.clientY - rect.top) * scaleY,
       };
     }
   };
@@ -176,6 +190,7 @@ function Whiteboard() {
           touchAction: "none",
           width: "95%",
           maxWidth: "1200px",
+          height: "65vh",
         }}
         onMouseDown={startDrawing}
         onMouseMove={draw}
